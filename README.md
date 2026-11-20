@@ -1,20 +1,34 @@
 # Market Data Quality Audit
 
-A small, dependency-free Python tool for checking market-data files before a backtest.
+**A small Python tool for checking hourly market data before backtesting.**
 
-**Background:** In a separate QQQ research project, I audited 3,128 hourly data files and found zero-row files and symbols with insufficient historical data. This project illustrates the checks; it does not reproduce that audit's complete results.
+[![Tests](https://github.com/jerryjiang7301-tech/market-data-quality-audit/actions/workflows/tests.yml/badge.svg)](https://github.com/jerryjiang7301-tech/market-data-quality-audit/actions/workflows/tests.yml)
 
-**Demo data:** Every file in `demo_data/` is fictional and created solely for this demonstration. No trading strategy, proprietary data, account information, or API credentials are included.
+During an independent market-data research project, I audited **3,128 hourly data files** and found empty files and symbols with insufficient history. This repository is a standalone demonstration inspired by that work. It does not reproduce the original audit or disclose any proprietary strategy.
 
-## Try it
+**All data in this repository is synthetic.** No licensed market data, trading signals, account information or credentials are included.
 
-Requires Python 3.9 or later. From the project directory:
+## At A Glance
+
+| Demonstration | Finding | Why it matters |
+| --- | --- | --- |
+| `HEALTHY` | Sufficient valid observations | Ready for further quality review |
+| `EMPTY` | No data rows | A silently missing symbol can change the research universe |
+| `SHORT` | Fewer observations than the chosen minimum | Insufficient history can leave indicators incomplete |
+
+The number of files above describes the historical audit, not the three-file demo. This project makes no claim about backtest returns or the outcome of fixing the historical data.
+
+## Run The Demo
+
+Requires Python 3.9+ and no third-party packages:
 
 ```bash
+git clone https://github.com/jerryjiang7301-tech/market-data-quality-audit.git
+cd market-data-quality-audit
 python3 audit_market_data.py demo_data
 ```
 
-The demo contains three fictional symbols: one passes, one has a short history, and one file is empty. The default minimum is five valid rows. The output lists problems per file and a summary.
+The output is a per-symbol report:
 
 ```text
 Symbol       Status  Finding
@@ -25,25 +39,23 @@ SHORT        WARN    short history: 2 valid rows (minimum: 5); 2026-01-05T09:30:
 Summary: 3 files | 1 passed | 1 warning | 1 error
 ```
 
-To use your own directory of CSV files, set the minimum history explicitly:
+## Use Your Own Data
+
+Each CSV filename represents a symbol. Files must contain `timestamp,open,high,low,close,volume` columns. Timestamps must be ISO 8601, consistently timezone-aware or consistently naive within each file. Aware timestamps are normalized to UTC.
 
 ```bash
 python3 audit_market_data.py /path/to/csv-files --min-rows 500 --strict
 ```
 
-`--strict` returns exit code 1 when any warning or error is found, useful for automated pipelines. Without `--strict`, the command returns 0 after reporting findings. Invalid arguments or an unreadable directory return 2.
+The minimum is a **row count**, not a guarantee of continuous historical coverage. `--strict` returns exit code 1 for warnings or errors; invalid arguments, an unreadable directory or no CSV files return 2. Without `--strict`, findings are reported and the command returns 0.
 
-To create a per-symbol CSV report for review, add `--csv-report /path/to/report.csv`. The output must not already exist; the tool will not overwrite it. Put the report outside the input directory so it is not treated as market data in a later run.
+To create a per-symbol CSV report, add `--csv-report /path/to/report.csv`. The report must not already exist: the tool will not overwrite it. Place it outside the input directory to avoid treating it as market data in a later run.
 
-## What it checks
+## Checks And Limits
 
-Each CSV filename represents a symbol. Each nonempty CSV must have `timestamp,open,high,low,close,volume` columns. Timestamps must be ISO 8601 values consistently using a timezone or consistently without one within each file; aware timestamps are normalized to UTC. The tool checks empty or header-only files, missing columns, invalid timestamps, duplicate or out-of-order timestamps, invalid/non-finite numbers, nonpositive prices, negative volume, and OHLC consistency. For a clean file, it reports the first and last observations. A file with fewer valid rows than `--min-rows` receives a warning; row counts and date ranges are not a guarantee of continuous historical coverage.
+The audit checks empty and header-only files, missing columns, invalid or inconsistent timestamps, duplicate or out-of-order timestamps, non-finite values, nonpositive prices, negative volume and inconsistent OHLC values. For valid files it shows the first and last observations.
 
-It does **not** verify exchange calendars, missing bars, corporate actions, survivorship bias, timezones against an exchange, data vendor accuracy, or duplicate symbols. Passing these checks does not establish that a dataset is suitable for a backtest.
-
-## Why it matters
-
-Empty files and short histories can silently change the available investment universe or produce incomplete indicators. Invalid or duplicate bars can distort returns and introduce misleading results. Catching these issues before simulation makes exclusions visible and easier to review; it does not, on its own, prevent look-ahead bias or prove a strategy's performance.
+It does **not** validate exchange calendars or missing bars, corporate actions, survivorship bias, exchange-specific timezones, vendor accuracy or duplicate symbols. Passing the audit does not establish that a dataset is complete or suitable for a backtest.
 
 ## Tests
 
@@ -51,4 +63,4 @@ Empty files and short histories can silently change the available investment uni
 python3 -m unittest discover -s tests -v
 ```
 
-The checks and example data are intentionally small and designed to run locally without network access or extra packages.
+Tests cover normal, empty and short files, invalid data, command-line exit codes and report overwrite protection. The demo and tests run locally without network access.
