@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from audit_market_data import audit_file
+from audit_market_data import audit_file, utc_timestamp
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = "timestamp,open,high,low,close,volume\n"
@@ -58,6 +58,93 @@ class AuditTests(unittest.TestCase):
             self.assertIn("HEALTHY,HEALTHY.csv,PASS", original)
             self.assertEqual(subprocess.run(cmd, capture_output=True).returncode, 2)
             self.assertEqual(report.read_text(encoding="utf-8"), original)
+
+    def test_expected_bars_and_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ABC.csv"
+            path.write_text(HEADER + "2026-01-05T09:30:00Z,10,11,9,10,100\n"
+                            "2026-01-05T11:30:00Z,10,11,9,10,100\n", encoding="utf-8")
+            expected = {utc_timestamp("2026-01-05T09:30:00Z"),
+                        utc_timestamp("2026-01-05T10:30:00Z"),
+                        utc_timestamp("2026-01-05T11:30:00Z")}
+            status, message = audit_file(path, 2, start=min(expected), end=max(expected), expected=expected)
+            self.assertEqual(status, "WARN")
+            self.assertIn("missing 1 expected bars", message)
+            self.assertNotIn("endpoints", message)
+            status, message = audit_file(path, 2, start=min(expected), end=utc_timestamp("2026-01-05T12:30:00Z"))
+            self.assertEqual(status, "WARN")
+            self.assertIn("requested endpoints", message)
+            path.write_text(HEADER + "2026-01-05T09:30:00,10,11,9,10,100\n", encoding="utf-8")
+            self.assertEqual(audit_file(path, 1, expected=expected)[0], "ERROR")
+
+    def test_expected_symbols_and_schedule_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "data"
+            data.mkdir()
+            (data / "ABC.csv").write_text(HEADER + "2026-03-09T13:30:00Z,10,11,9,10,100\n", encoding="utf-8")
+            symbols = data / "symbols.csv"
+            symbols.write_text("symbol\nABC\nMISSING\n", encoding="utf-8")
+            schedule = data / "schedule.csv"
+            schedule.write_text("symbol,timestamp\nABC,2026-03-09T09:30:00-04:00\n", encoding="utf-8")
+            cmd = [sys.executable, str(ROOT / "audit_market_data.py"), str(data), "--min-rows", "1",
+                   "--symbols", str(symbols), "--schedule", str(schedule), "--strict"]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("ABC          PASS", result.stdout)
+            self.assertIn("MISSING      ERROR   expected symbol file missing", result.stdout)
+            self.assertNotIn("schedule     ", result.stdout)
+            schedule.write_text("symbol,timestamp\nABC,2026-03-09T09:30:00\n", encoding="utf-8")
+            self.assertEqual(subprocess.run(cmd, capture_output=True).returncode, 2)
+            schedule.write_text("symbol,timestamp\nABC,2026-03-09T13:30:00Z\nABC,2026-03-09T09:30:00-04:00\n", encoding="utf-8")
+            self.assertEqual(subprocess.run(cmd, capture_output=True).returncode, 2)
+            symbols.write_text("symbol\nABC\nABC\n", encoding="utf-8")
+            self.assertEqual(subprocess.run(cmd, capture_output=True).returncode, 2)
+
+    def test_coverage_arguments_and_missing_schedule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "data"
+            data.mkdir()
+            (data / "ABC.csv").write_text(HEADER + "2026-01-05T09:30:00Z,10,11,9,10,100\n", encoding="utf-8")
+            (data / "DEF.csv").write_text(HEADER + "2026-01-05T09:30:00Z,10,11,9,10,100\n", encoding="utf-8")
+            schedule = root / "schedule.csv"
+            schedule.write_text("symbol,timestamp\nABC,2026-01-05T09:30:00Z\n", encoding="utf-8")
+            cmd = [sys.executable, str(ROOT / "audit_market_data.py"), str(data), "--min-rows", "1"]
+            self.assertEqual(subprocess.run(cmd + ["--start", "2026-01-05T09:30:00Z"], capture_output=True).returncode, 2)
+            result = subprocess.run(cmd + ["--schedule", str(schedule), "--strict"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("no expected schedule for symbol", result.stdout)
+
+    def test_empty_input_directory_and_missing_file_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "data"
+            data.mkdir()
+            symbols = root / "symbols.csv"
+            symbols.write_text("symbol\nABC\n", encoding="utf-8")
+            report = root / "report.csv"
+            cmd = [sys.executable, str(ROOT / "audit_market_data.py"), str(data),
+                   "--symbols", str(symbols), "--csv-report", str(report), "--strict"]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("ABC,,ERROR,expected symbol file missing", report.read_text(encoding="utf-8"))
+
+    def test_invalid_schedule_and_reversed_endpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            symbols = root / "symbols.csv"
+            symbols.write_text("symbol\nABC\n", encoding="utf-8")
+            schedule = root / "schedule.csv"
+            schedule.write_text("symbol,timestamp\nABC\n", encoding="utf-8")
+            cmd = [sys.executable, str(ROOT / "audit_market_data.py"), str(root),
+                   "--symbols", str(symbols), "--schedule", str(schedule)]
+            self.assertEqual(subprocess.run(cmd, capture_output=True).returncode, 2)
+            schedule.write_text("symbol,timestamp\nXYZ,2026-01-01T00:00:00Z\n", encoding="utf-8")
+            self.assertEqual(subprocess.run(cmd, capture_output=True).returncode, 2)
+            cmd = [sys.executable, str(ROOT / "audit_market_data.py"), str(root), "--symbols", str(symbols),
+                   "--start", "2026-01-02T00:00:00Z", "--end", "2026-01-01T00:00:00Z"]
+            self.assertEqual(subprocess.run(cmd, capture_output=True).returncode, 2)
 
 
 if __name__ == "__main__":

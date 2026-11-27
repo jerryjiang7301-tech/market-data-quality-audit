@@ -1,61 +1,65 @@
 # Market Data Quality Audit
 
-**A small Python tool for checking hourly market data before backtesting.**
+**Catch missing symbols and incomplete hourly price data before a backtest begins.**
 
 [![Tests](https://github.com/jerryjiang7301-tech/market-data-quality-audit/actions/workflows/tests.yml/badge.svg)](https://github.com/jerryjiang7301-tech/market-data-quality-audit/actions/workflows/tests.yml)
 
-During an independent market-data research project, I audited **3,128 hourly data files** and found empty files and symbols with insufficient history. This repository is a standalone demonstration inspired by that work. It does not reproduce the original audit or disclose any proprietary strategy.
+A backtest can run without an error even when a symbol is missing or its history is too short. The resulting universe and indicator warm-up may differ from what the researcher intended. This small Python tool checks those inputs and produces an actionable per-symbol report.
 
-**All data in this repository is synthetic.** No licensed market data, trading signals, account information or credentials are included.
+The project is inspired by a real audit of **3,128 hourly files** in independent market-data research. It is a standalone demonstration of a data-quality problem relevant to my QQQ/P1 research workflow, not the production P1 implementation or a reproduction of that historical audit. All included data and schedules are synthetic. No licensed market data, proprietary signals, account information or credentials are included.
 
-## At A Glance
-
-| Demonstration | Finding | Why it matters |
-| --- | --- | --- |
-| `HEALTHY` | Sufficient valid observations | Ready for further quality review |
-| `EMPTY` | No data rows | A silently missing symbol can change the research universe |
-| `SHORT` | Fewer observations than the chosen minimum | Insufficient history can leave indicators incomplete |
-
-The number of files above describes the historical audit, not the three-file demo. This project makes no claim about backtest returns or the outcome of fixing the historical data.
-
-## Run The Demo
+## Run the demo
 
 Requires Python 3.9+ and no third-party packages:
 
 ```bash
 git clone https://github.com/jerryjiang7301-tech/market-data-quality-audit.git
 cd market-data-quality-audit
-python3 audit_market_data.py demo_data
+python3 audit_market_data.py demo_data --symbols demo_config/symbols.csv --schedule demo_config/schedule.csv
 ```
-
-The output is a per-symbol report:
 
 ```text
 Symbol       Status  Finding
 EMPTY        ERROR   empty file
 HEALTHY      PASS    6 valid rows; 2026-01-05T09:30:00+00:00 to 2026-01-05T14:30:00+00:00
-SHORT        WARN    short history: 2 valid rows (minimum: 5); 2026-01-05T09:30:00+00:00 to 2026-01-05T10:30:00+00:00
+MISSING      ERROR   expected symbol file missing
+SHORT        WARN    short history: 2 valid rows (minimum: 5); missing 1 expected bars; first 2026-01-05T11:30:00+00:00; 2026-01-05T09:30:00+00:00 to 2026-01-05T10:30:00+00:00
 
-Summary: 3 files | 1 passed | 1 warning | 1 error
+Summary: 4 symbols | 1 passed | 1 warning | 2 error
 ```
 
-## Use Your Own Data
+The example has three data files and four expected symbols. The threshold of five rows and the timestamps are deliberately small, synthetic demonstration inputs, not a market calendar or an appropriate model warm-up policy. The historical 3,128-file count is not a result of this demo, and no backtest or repair outcome is claimed.
 
-Each CSV filename represents a symbol. Files must contain `timestamp,open,high,low,close,volume` columns. Timestamps must be ISO 8601, consistently timezone-aware or consistently naive within each file. Aware timestamps are normalized to UTC.
+## Apply to a research dataset
+
+Each input CSV filename is a case-sensitive symbol and must contain `timestamp,open,high,low,close,volume`. Input files are read directly from the specified directory, not recursively. Timestamps must be ISO 8601, consistently timezone-aware or consistently naive within a file; aware timestamps are normalized to UTC.
+
+Optional inputs make the intended universe and coverage explicit:
+
+- `--symbols symbols.csv`: CSV with a `symbol` column. Expected symbols without a matching file are errors. Extra data files are also audited; they are not silently discarded.
+- `--schedule schedule.csv`: CSV with `symbol,timestamp` columns, one expected bar per row. Timestamps must have a timezone offset. Missing bars and symbols without an expected schedule are warnings. If both manifests are supplied, every schedule symbol must appear in the symbols list.
+- `--start` and `--end`: inclusive ISO 8601 timestamps with timezone offsets. A file that starts later or ends earlier receives a warning. This checks the endpoints only; it does not establish continuity.
+- `--min-rows`: minimum number of valid rows, default 5. This is a row count, not a measure of trading days or continuous history.
+- `--strict`: return exit code 1 if any symbol has warnings or errors. Configuration errors return 2. Without `--strict`, completed audits return 0 even when findings exist.
+- `--csv-report`: write a new per-symbol report without overwriting an existing file.
+
+For example:
 
 ```bash
-python3 audit_market_data.py /path/to/csv-files --min-rows 500 --strict
+python3 audit_market_data.py /path/to/csv-files \
+  --symbols /path/to/symbols.csv \
+  --schedule /path/to/schedule.csv \
+  --start 2026-01-05T09:30:00Z --end 2026-01-05T14:30:00Z \
+  --min-rows 500 --strict --csv-report /path/to/report.csv
 ```
 
-The minimum is a **row count**, not a guarantee of continuous historical coverage. `--strict` returns exit code 1 for warnings or errors; invalid arguments, an unreadable directory or no CSV files return 2. Without `--strict`, findings are reported and the command returns 0.
+Generate an expected schedule from the correct exchange calendar, vendor timestamp convention, and each symbol's actual trading period **before** running this audit. Different instruments can have different expected rows. This tool does not infer holidays, early closes, daylight-saving changes, listing dates or suspensions. A sample schedule is not a substitute for a validated calendar. Data must be timezone-aware when using `--schedule` or coverage endpoints.
 
-To create a per-symbol CSV report, add `--csv-report /path/to/report.csv`. The report must not already exist: the tool will not overwrite it. Place it outside the input directory to avoid treating it as market data in a later run.
+## Checks and limitations
 
-## Checks And Limits
+The audit checks empty and header-only files, missing columns, invalid or inconsistent timestamps, duplicate or out-of-order timestamps, non-finite values, nonpositive prices, negative volume and inconsistent OHLC values. It can also compare files against an explicitly supplied expected universe, date endpoints and per-symbol timestamps.
 
-The audit checks empty and header-only files, missing columns, invalid or inconsistent timestamps, duplicate or out-of-order timestamps, non-finite values, nonpositive prices, negative volume and inconsistent OHLC values. For valid files it shows the first and last observations.
-
-It does **not** validate exchange calendars or missing bars, corporate actions, survivorship bias, exchange-specific timezones, vendor accuracy or duplicate symbols. Passing the audit does not establish that a dataset is complete or suitable for a backtest.
+It does **not** validate that the provided universe or schedule is correct, infer market sessions, verify corporate actions, eliminate survivorship bias, check vendor accuracy or guarantee a dataset is suitable for a backtest. An expected bar may legitimately be absent for an illiquid or suspended security depending on the vendor. A `PASS` means only that configured checks passed. The tool reports issues; it does not repair data or automatically connect to a trading system.
 
 ## Tests
 
@@ -63,4 +67,4 @@ It does **not** validate exchange calendars or missing bars, corporate actions, 
 python3 -m unittest discover -s tests -v
 ```
 
-Tests cover normal, empty and short files, invalid data, command-line exit codes and report overwrite protection. The demo and tests run locally without network access.
+Tests cover valid, empty and short data; missing symbols and bars; timezone handling; invalid input; command-line exit codes; and report overwrite protection. GitHub Actions runs the suite on each push.
